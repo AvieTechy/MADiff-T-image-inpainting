@@ -3,17 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-tokenizer = T5Tokenizer.from_pretrained("t5-small")
-t5_encoder = T5EncoderModel.from_pretrained("t5-small").eval().to(device)
-
-@torch.no_grad()
-def encode_prompt(prompt_list):
-    tokens = tokenizer(prompt_list, return_tensors="pt", padding=True, truncation=True).to(device)
-    outputs = t5_encoder(**tokens)
-    embed = outputs.last_hidden_state.mean(dim=1)  # [B, 512]
-    return embed
+from torch import nn
+import torch
+import torch.nn.functional as F
 
 class MaskedContextEncoder(nn.Module):
     def __init__(self, image_size=512, patch_size=16, in_channels=4, embed_dim=256, depth=4, nhead=8):
@@ -73,27 +65,44 @@ class CrossAttentionBlock(nn.Module):
         x = self.norm2(x + self.ffn(x))
         return x  # [B, N, D]
 
-class LightUNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3):
+class StrongUNet(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3, base_channels=64):
         super().__init__()
         def conv_block(in_c, out_c):
             return nn.Sequential(
                 nn.Conv2d(in_c, out_c, 3, padding=1),
-                nn.ReLU(),
-                nn.BatchNorm2d(out_c)
+                nn.BatchNorm2d(out_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_c, out_c, 3, padding=1),
+                nn.BatchNorm2d(out_c),
+                nn.ReLU(inplace=True),
             )
-        self.enc1 = conv_block(in_channels, 64)
-        self.enc2 = conv_block(64, 128)
+
+        self.enc1 = conv_block(in_channels, base_channels)
+        self.enc2 = conv_block(base_channels, base_channels * 2)
+        self.enc3 = conv_block(base_channels * 2, base_channels * 4)
+        self.enc4 = conv_block(base_channels * 4, base_channels * 8)
+
         self.pool = nn.MaxPool2d(2)
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.dec2 = conv_block(128 + 64, 64)
-        self.dec1 = nn.Conv2d(64, out_channels, 3, padding=1)
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+
+        self.dec3 = conv_block(base_channels * 8 + base_channels * 4, base_channels * 4)
+        self.dec2 = conv_block(base_channels * 4 + base_channels * 2, base_channels * 2)
+        self.dec1 = conv_block(base_channels * 2 + base_channels, base_channels)
+
+        self.final = nn.Conv2d(base_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
-        d2 = self.dec2(torch.cat([self.up(e2), e1], dim=1))
-        return self.dec1(d2)
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
+
+        d3 = self.dec3(torch.cat([self.up(e4), e3], dim=1))
+        d2 = self.dec2(torch.cat([self.up(d3), e2], dim=1))
+        d1 = self.dec1(torch.cat([self.up(d2), e1], dim=1))
+
+        return self.final(d1)
 
 class DiffusionDecoder(nn.Module):
     def __init__(self, token_dim=256, text_dim=512, out_channels=3, img_size=512, patch_size=16):
@@ -110,7 +119,7 @@ class DiffusionDecoder(nn.Module):
         decoder_layer = nn.TransformerDecoderLayer(d_model=token_dim, nhead=8, batch_first=True)
         self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=4)
         self.to_latent = nn.Linear(token_dim, patch_size * patch_size * out_channels)
-        self.unet = LightUNet()
+        self.unet = StrongUNet()
 
     def forward(self, context_token, text_embed):
         B = context_token.size(0)
