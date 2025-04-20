@@ -2,7 +2,6 @@ import os
 import torch
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
-from lossfunction import total_inpainting_loss
 
 def load_checkpoint(model, checkpoint_path, device="cuda"):
     """
@@ -31,12 +30,11 @@ def training(model, train_loader, is_continue=False,checkpoint_path="best_checkp
     scaler = GradScaler()
 
     best_loss = float("inf")
-
     # Resume from checkpoint if required
     if is_continue:
         load_checkpoint(model, checkpoint_path)
         # If you store epoch info in checkpoint, set start_epoch accordingly
-
+    num_epochs += start_epoch
     for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0.0
