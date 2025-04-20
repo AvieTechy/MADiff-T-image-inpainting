@@ -16,7 +16,8 @@ def load_checkpoint(model, checkpoint_path, device="cuda"):
     else:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-def training(model, train_loader, is_continue=False, checkpoint_path="best_checkpoint.pth", num_epochs=100, device="cuda", lr=1e-4):
+
+def training(model, train_loader, is_continue=False,checkpoint_path="best_checkpoint.pth", num_epochs=100, device="cuda", lr=1e-4, start_epoch=0):
     """
     Train the model with optional resume from checkpoint.
 
@@ -29,7 +30,6 @@ def training(model, train_loader, is_continue=False, checkpoint_path="best_check
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scaler = GradScaler()
 
-    start_epoch = 0
     best_loss = float("inf")
 
     # Resume from checkpoint if required
