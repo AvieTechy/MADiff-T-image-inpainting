@@ -27,7 +27,7 @@ def evaluate(model, dataloader, device, num_samples=None):
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="🔍 Evaluating"):
-            # ✅ unpack 5 phần tử (có cả fname)
+            # unpack 5 phần tử (có cả fname)
             masked_img, mask, target_img, text_embed, _ = batch
 
             masked_img = masked_img.to(device)
@@ -58,7 +58,7 @@ def evaluate(model, dataloader, device, num_samples=None):
     fid_score = fid_metric.compute().item()
     fid_metric.reset()
 
-    print("📊 Evaluation Metrics:")
+    print("Evaluation Metrics:")
     print(f"   SSIM: {avg_ssim:.4f}")
     print(f"   PSNR: {avg_psnr:.2f} dB")
     print(f"   FID : {fid_score:.2f}")
@@ -81,13 +81,13 @@ def save_metrics(metrics, save_path="evaluation_metrics.json", format="json"):
     if format == "json":
         with open(save_path, "w") as f:
             json.dump(metrics, f, indent=4)
-        print(f"💾 Metrics saved to {save_path} (JSON)")
+        print(f"Metrics saved to {save_path} (JSON)")
     elif format == "txt":
         with open(save_path, "w") as f:
             f.write("Evaluation Metrics:\n")
             f.write(f"SSIM: {metrics['ssim']:.4f}\n")
             f.write(f"PSNR: {metrics['psnr']:.2f} dB\n")
             f.write(f"FID : {metrics['fid']:.2f}\n")
-        print(f"💾 Metrics saved to {save_path} (TXT)")
+        print(f"Metrics saved to {save_path} (TXT)")
     else:
-        raise ValueError("❌ format phải là 'json' hoặc 'txt'")
+        raise ValueError("format phải là 'json' hoặc 'txt'")

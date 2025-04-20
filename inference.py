@@ -1,79 +1,95 @@
-def inference_first_image(model, image_dir, caption_map=None, mask_generator=None, device='cuda'):
-    from glob import glob
-    import os
-    import torch
-    import matplotlib.pyplot as plt
-    from torchvision import transforms
-    from PIL import Image
-    import numpy as np
-    from transformers import T5Tokenizer, T5EncoderModel
+import torch
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+from torchvision import transforms
+from torchvision.transforms.functional import to_tensor, to_pil_image
+from transformers import T5Tokenizer, T5EncoderModel
+import cv2
 
-    # 1. Lấy danh sách ảnh
-    image_paths = sorted(glob(os.path.join(image_dir, "*.jpg")) + glob(os.path.join(image_dir, "*.png")))
-    if not image_paths:
-        print(f"❌ Không tìm thấy ảnh trong: {image_dir}")
-        return
+def postprocess_restore_with_blur(output_tensor, mask_tensor, sharpen=True):
+    """
+    Hậu xử lý ảnh inpaint bằng cách làm mịn và làm sắc nét vùng được khôi phục.
+    """
+    output_np = to_pil_image(output_tensor.squeeze(0).cpu()).convert("RGB")
+    mask_np = mask_tensor.squeeze().cpu().numpy()  # (H, W)
 
-    # 2. Lấy ảnh đầu tiên
-    image_path = image_paths[2]
-    fname = os.path.basename(image_path)
-    print(f"🖼️ Ảnh đầu tiên: {fname}")
+    img_cv = cv2.cvtColor(np.array(output_np), cv2.COLOR_RGB2BGR)
+    mask_cv = (mask_np < 0.5).astype(np.uint8) * 255  # 1 ở vùng bị che
 
-    # 3. Load ảnh
-    img = Image.open(image_path).convert("RGB")
+    # Làm mịn vùng mask
+    blurred = cv2.GaussianBlur(img_cv, (5, 5), sigmaX=1.0)
+
+    # Tùy chọn sharpen nhẹ
+    if sharpen:
+        kernel = np.array([[0, -1, 0],
+                           [-1, 5, -1],
+                           [0, -1, 0]])
+        blurred = cv2.filter2D(blurred, -1, kernel)
+
+    # Trộn vùng mask bị che với ảnh đã blur
+    alpha = np.repeat(mask_cv[..., None] / 255.0, 3, axis=2)
+    result = blurred * alpha + img_cv * (1 - alpha)
+    result = result.astype(np.uint8)
+
+    result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+    result_tensor = to_tensor(Image.fromarray(result_rgb)).unsqueeze(0).to(mask_tensor.device)
+    return result_tensor
+
+def inference_single_image(img: Image.Image, mask: np.ndarray, caption: str, model, device="cuda"):
+    """
+    Inference 1 ảnh với mô hình MADiff-T
+    """
+    model = model.to(device).eval()
+
     transform = transforms.Compose([
         transforms.Resize((512, 512)),
         transforms.ToTensor()
     ])
-    img_tensor = transform(img).unsqueeze(0).to(device)  # [1, 3, 512, 512]
+    img_tensor = transform(img.convert("RGB")).unsqueeze(0).to(device)
 
-    # 4. Caption
-    caption = caption_map.get(fname, "a person") if caption_map else "a person"
+    # Resize và chuẩn hóa mask
+    mask_resized = cv2.resize(mask.astype(np.float32), (512, 512))
+    mask_tensor = torch.from_numpy(mask_resized).unsqueeze(0).unsqueeze(0).to(device).float()
 
-    # 5. Tạo mask ngẫu nhiên nếu chưa có
-    if mask_generator is None:
-        from MaskGenerator import MaskGenerator
-        mask_generator = MaskGenerator(height=512, width=512)
+    masked_img = img_tensor * mask_tensor
 
-    mask_np = mask_generator.sample().transpose(2, 0, 1)
-    mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).to(device).float()  # [1, 1, 512, 512]
-
-    masked_img = img_tensor * mask_tensor  # [1, 3, 512, 512]
-
-    # 6. Text embedding
     tokenizer = T5Tokenizer.from_pretrained("t5-small")
     text_encoder = T5EncoderModel.from_pretrained("t5-small").encoder.to(device).eval()
+
     tokens = tokenizer(caption, return_tensors="pt", truncation=True, max_length=20).to(device)
     with torch.no_grad():
         text_embed = text_encoder(**tokens).last_hidden_state.mean(dim=1)
 
-    # 7. Inference
-    model.eval()
     with torch.no_grad():
-        output = model(masked_img, mask_tensor, text_embed)  # [1, 3, 512, 512]
+        output = model(masked_img, mask_tensor, text_embed)
         output = output.clamp(0, 1)
 
-        # 🔁 Chỉ thay thế vùng bị che, giữ nguyên vùng còn lại từ ảnh gốc
+        # Hậu xử lý nâng cao
+        output = postprocess_restore_with_blur(output, mask_tensor)
+
         restored = img_tensor * mask_tensor + output * (1 - mask_tensor)
 
-    # 8. Hiển thị ảnh
-    def to_numpy(t): return t.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    # Hiển thị kết quả
+    def to_numpy(t): return t.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
 
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 3, 1)
     plt.imshow(to_numpy(img_tensor))
-    plt.title("Ảnh gốc")
     plt.axis("off")
+    plt.title("Ảnh gốc")
 
     plt.subplot(1, 3, 2)
     plt.imshow(to_numpy(masked_img))
-    plt.title("Ảnh bị che")
     plt.axis("off")
+    plt.title("Ảnh bị che")
 
     plt.subplot(1, 3, 3)
     plt.imshow(to_numpy(restored))
-    plt.title(f"Phục hồi\n\"{caption}\"", fontsize=10)
     plt.axis("off")
+    plt.title(f"Phục hồi\n\"{caption}\"", fontsize=10)
 
     plt.tight_layout()
     plt.show()
+
+    return restored
